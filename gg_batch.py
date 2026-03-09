@@ -27,6 +27,16 @@ RESPONSE_SELECTORS = [
     "message-content .model-response-text",
     "div[data-message-author-role='model']",
 ]
+RESPONSE_COUNT_SELECTORS = [
+    "model-response",
+    "div[data-message-author-role='model']",
+]
+STOP_SELECTORS = [
+    "button[aria-label*='Stop']",
+    "button[aria-label*='停止']",
+    "button:has-text('Stop')",
+    "button:has-text('停止')",
+]
 
 
 @dataclass
@@ -132,12 +142,10 @@ async def process_one(
     worker_id: int,
     job: Job,
     prompt_tpl: str,
-    target_url: str,
     out_dir: Path,
     timeout_s: int,
 ) -> Result:
     timeout_ms = timeout_s * 1000
-    await page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
 
     prompt = prompt_tpl.replace("{{file_name}}", job.path.name).replace("{{file_path}}", str(job.path))
 
@@ -148,10 +156,38 @@ async def process_one(
     box = await find_prompt_box(page)
     await box.click()
     await box.fill(prompt)
+
+    async def _response_count() -> int:
+        c = 0
+        for sel in RESPONSE_COUNT_SELECTORS:
+            try:
+                c = max(c, await page.locator(sel).count())
+            except Exception:
+                pass
+        return c
+
+    async def _stop_visible() -> bool:
+        visible = False
+        for sel in STOP_SELECTORS:
+            try:
+                visible = visible or await page.locator(sel).first.is_visible(timeout=100)
+            except Exception:
+                pass
+        return visible
+
+    response_count_before = await _response_count()
     await box.press("Enter")
 
-    # wait response (simple stabilization)
+    # wait response with safer completion rule:
+    # 1) response count increased
+    # 2) latest text stable for several ticks
+    # 3) stop button not visible
     deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        if await _response_count() > response_count_before:
+            break
+        await page.wait_for_timeout(250)
+
     last = ""
     stable = 0
     while asyncio.get_event_loop().time() < deadline:
@@ -161,8 +197,10 @@ async def process_one(
         else:
             stable = 0
         last = cur or last
-        if last and stable >= 3:
+
+        if last and stable >= 4 and not await _stop_visible():
             break
+
         await page.wait_for_timeout(500)
 
     if not last:
@@ -199,6 +237,7 @@ async def worker_loop(
     summary: list[Result],
 ):
     page = context.pages[worker_id] if len(context.pages) > worker_id else await context.new_page()
+    await page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
     handled = 0
 
     while True:
@@ -208,13 +247,18 @@ async def worker_loop(
             return
 
         try:
-            res = await process_one(page, worker_id, job, prompt_tpl, target_url, out_dir, timeout_s)
+            res = await process_one(page, worker_id, job, prompt_tpl, out_dir, timeout_s)
             summary.append(res)
         except Exception as e:
             shot = out_dir / "debug" / f"worker{worker_id}-{safe_name(job.path)}.png"
+            html_dump = out_dir / "debug" / f"worker{worker_id}-{safe_name(job.path)}.html"
             shot.parent.mkdir(parents=True, exist_ok=True)
             try:
                 await page.screenshot(path=str(shot), full_page=True)
+            except Exception:
+                pass
+            try:
+                html_dump.write_text(await page.content(), encoding="utf-8")
             except Exception:
                 pass
             append_failed_jsonl(
@@ -227,6 +271,7 @@ async def worker_loop(
                     "error": str(e),
                     "page_url": page.url,
                     "debug_artifact": str(shot),
+                    "debug_html": str(html_dump),
                 },
             )
             summary.append(Result(ok=False, input_path=str(job.path), error=str(e)))

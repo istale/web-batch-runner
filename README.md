@@ -2,6 +2,11 @@
 
 Batch file analyzer via Gemini Web UI (CDP attach).
 
+Behavior notes:
+- Each worker keeps using the same conversation tab across requests.
+- Page refresh only happens after a request is fully completed and `refresh_every` threshold is reached.
+- No retry; failures are appended to `failed.jsonl`.
+
 ## Quick Start
 
 1. Start Chrome with CDP and dedicated profile:
