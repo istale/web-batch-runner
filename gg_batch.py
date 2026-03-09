@@ -55,8 +55,8 @@ class Result:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--cdp-url", default="http://127.0.0.1:9222")
-    p.add_argument("--target-url", default="https://gemini.google.com/")
+    p.add_argument("--cdp-url", required=True)
+    p.add_argument("--target-url", required=True)
     p.add_argument("--input")
     p.add_argument("--input-dir")
     p.add_argument("--prompt")

@@ -29,6 +29,8 @@ pip install -U pip playwright
 
 ```bash
 python gg_batch.py \
+  --cdp-url http://127.0.0.1:9222 \
+  --target-url https://gemini.google.com/ \
   --input-dir ./inputs \
   --prompt-file ./prompt.txt \
   --output-dir ./outputs \
